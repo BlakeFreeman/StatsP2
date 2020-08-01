@@ -1,0 +1,467 @@
+---
+title: "MSDS 6372 Project 2 - Bank Dataset"
+author: "Sid Swarupananda"
+date: "July 24, 2020"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+## R Markdown
+
+This is an R Markdown document. Markdown is a simple formatting syntax for authoring HTML, PDF, and MS Word documents. For more details on using R Markdown see <http://rmarkdown.rstudio.com>.
+
+When you click the **Knit** button a document will be generated that includes both content as well as the output of any embedded R code chunks within the document. You can embed an R code chunk like this:
+
+```{r library}
+library(ada) # adaptive boosting
+library(car)
+library(caret) # models
+library(caTools)
+library(C50) # C50 decision tree
+library(corrplot) # correlation plots
+library(DALEX) # explain models
+library(DescTools) # plots
+library(DMwR)
+library(doParallel) # parellel processing
+library(dplyr) # syntax
+library(effects)
+library(GGally)
+library(ggfortify) # pca plots
+library(ggplot2) # plots
+library(glmnet)
+library(gmodels)
+library(inspectdf) # data overview
+library(kableExtra)
+library(magrittr)
+library(MASS)
+library(mice) # missing values
+library(MLeval)
+library(MLmetrics)
+library(naivebayes)
+library(partykit)
+library(pheatmap)
+library(plotly)
+library(psych) # pairs.plot
+library(randomForest) # random forest
+library(ranger)
+library(readr) # quick load
+library(ROCR)
+library(rpart) # decision tree
+library(rpart.plot) # decision tree plot
+library(rsample)
+library(sjPlot) # contingency tables
+library(stringr)
+library(tableplot) # data overview
+library(tictoc) # measure time
+library(tidyverse)
+library(VIM) # aggr 
+```
+
+```{r read file}
+setwd("C:/Users/sswarupa/OneDrive - GameStop, Inc/Documents/SMU/Datasets")
+# # There are no missing values in the dataset but there are many unknown values. 
+# Replacing unknown values with NAs while reading the file
+bank <- read.csv("bank-additional-full.csv",na.strings=c("unknown"),sep = ';') 
+summary(bank)
+str(bank)
+glimpse(bank)
+bank$age<-as.numeric(bank$age)
+bank$day<-as.numeric(bank$day)
+bank$duration<-as.numeric(bank$duration)
+bank$campaign<-as.numeric(bank$campaign)
+bank$pdays<-as.numeric(bank$pdays)
+bank$previous<-as.numeric(bank$previous)
+```
+
+```{r missing values}
+sapply(bank, function(x) sum(is.na(x)))
+# Missing values plot
+aggr_plot <- aggr(bank,col=c('blue','red'),numbers=TRUE, sortVars=TRUE, labels=names(df), cex.axis=.7, gap=3, ylab=c("Histogram of missing data","Pattern"))
+# Data Cleaning
+# Using imputation method to impute the missing values using MICE package with predictive mean matching method "pmm"
+bank_imp <- mice(bank, m=3, maxit=6, meth='pmm',seed=5000)
+bank_imp <- complete(bank_imp)
+# After imputation, certain rows became identical hence need to be deduplicated.
+bank_imp = bank_imp %>% distinct
+sapply(bank_imp, function(x) sum(is.na(x)))
+# Missing values plot
+aggr_plot <- aggr(bank_imp,col=c('blue','red'),numbers=TRUE, sortVars=TRUE, labels=names(df), cex.axis=.7, gap=3, ylab=c("Histogram of missing data","Pattern"))
+
+summary(bank_imp)
+str(bank_imp)
+glimpse(bank_imp)
+
+# check for outliers
+boxplot(bank_imp)
+```
+
+```{r corrplot}
+inspect_cat(bank_imp)
+inspect_num(bank_imp)
+inspect_cor(bank_imp)
+# correlation plot numerical variables
+bank_num <- select_if(bank_imp, is.numeric) 
+bank_cor <- bank_num %>% cor()
+corrplot(bank_cor, method = "number")
+# Correlation between variables
+# This will help us to decide if we can drop some columns / predictors based on its correlation with our outcome variable y
+pairs.panels(bank_imp[,c(1:4),21])
+pairs.panels(bank_imp[,c(5:8),21])
+pairs.panels(bank_imp[,c(9:12),21])
+pairs.panels(bank_imp[,c(13:16),21])
+#Based on the above correlation, we can do subsets
+bank_sub <- bank_imp[,c(1:4,6:8,11,13,14,21)]
+glimpse(bank_sub)
+```
+
+```{r pca}
+# Pca on numerical variables
+pca <- prcomp(bank_num, scale = T )
+#ggplot(data=pca.scores, aes(x=PC1,y=PC2)) + geom_point(aes(col=y),size=1) + ggtitle("PCA of age and duration") + xlab("age") + ylab("duration")
+#ggplot(data=pca.scores, aes(x=PC1,y=PC3)) + geom_point(aes(col=y),size=1) + ggtitle("PCA of age and campaign") + xlab("age") + ylab("campaign")
+# variance
+pr_var <- (pca$sdev)^2
+# % of variance explained
+prop_varex <- pr_var/sum(pr_var)
+# show percentage of variance of each component
+plot(prop_varex, xlab = "Principal Component", ylab = "Proportion of Variance Explained", type = "b" )
+# Scree Plot
+plot(cumsum(prop_varex), xlab = "Principal Component", ylab = "Cumulative Proportion of Variance Explained", type = "b" )
+# first 6 components are responsible for around 85% of variance
+cumsum(prop_varex)
+# This result means that the majority of information contained in 11 numeric variables can be reduced to 6 principal components.
+# plotting pca
+autoplot(pca)
+# PCA result should only contains numeric values. If you want to colorize by non-numeric values which original data has, pass original data using data keyword and then specify column name by colour keyword. 
+autoplot(pca,data=bank_imp,colour = 'marital')
+# Passing loadings = TRUE draws eigenvectors.
+autoplot(pca,data=bank_imp,colour = 'marital',loadings = TRUE,loadings.colour = 'blue', loadings.label = TRUE, loadings.label.size = 3)
+autoplot(pca,data=bank_imp,colour = 'education',loadings = TRUE,loadings.colour = 'blue', loadings.label = TRUE, loadings.label.size = 3)
+```
+
+```{r age}
+# five number summary for age variable
+boxplot(bank_imp$age, col=hcl(0),xaxt="n", xlab="Age Distribution", horizontal=TRUE) 
+axis(side=1, at=fivenum(bank_imp$age), labels=TRUE,las=2)
+text(fivenum(bank_imp$age),rep(1.2,5),srt=90,adj=0,
+     labels=c("Min","Lower","Median","Upper","max"))
+
+
+# Density plot of number of participants by age
+ggplot(bank_imp, aes(x = age)) + geom_density(fill = "blue", bw = 1) + labs(title = "Participants by age", subtitle = "bandwidth = 1")
+
+#find # of unique ages to choose histogram bin 
+binnum <- length(unique(bank_imp$age))
+# Densit plot of Age of subscribers and non-subscribers
+ggplot(bank_imp, aes(age, fill = y)) + geom_histogram(bins = binnum) + ggtitle("Age of subscribers and non-subscribers") +
+  xlab("Age") + ylab("# of subscribers") + theme_bw() 
+#In the histogram above we can see that there is one customer age that is significantly more prevalent than others.
+
+# Age in different Bins
+for(i in 1: nrow(bank_imp)) {
+  if (bank_imp$age[i] < 20) {
+      bank_imp$age[i] = 'Teens'
+  } else if (bank_imp$age[i] < 60 & bank_imp$age[i] > 19) {
+             bank_imp$age[i] = 'Adults'
+  } else if (bank_imp$age[i] > 59) {
+             bank_imp$age[i] = 'Senior Citizens'
+  }
+}
+bank_imp$age <- as.factor(bank_imp$age)
+```
+
+```{r EDA}
+# EDA
+par(mfrow=c(2,2),las=2)
+boxplot(duration~y,data=bank_imp,col="red")
+boxplot(pdays~y,data=bank_imp,col="green")
+
+plot(bank_imp$housing, bank_imp$y, xlab="Housing", ylab="Become Customer?", col=c("red","green"))
+plot(bank_imp$contact, bank_imp$y, xlab="Contact Type", ylab="Become Customer?", col=c("red","green"))
+
+# Previous - number of contacts performed before this campaign and for this client & subscriber count
+ggplot(bank_imp %>% group_by(previous, y) %>% tally(),aes(previous, n, fill = y)) + geom_col() + theme_bw()
+
+# duration - duration: last contact duration, in seconds (numeric). Important note: this attribute highly affects the output target (e.g., if duration=0 then y='no'). Yet, the duration is not known before a call is performed. Also, after the end of the call y is obviously known. Thus, this input should only be included for benchmark purposes and should be discarded if the intention is to have a realistic predictive model.
+ggplot(bank_imp, aes(duration, fill = y)) + geom_density(alpha = 0.5) + theme_bw()
+# people who spent more time on the call were more likely to subscribe, this variable could be very important
+
+# martial status and deposit
+martialstatus_deposit<-table(bank_imp$y,bank_imp$marital)
+mosaicplot(martialstatus_deposit, color = c("red","blue","green"), xlab="Deposit", ylab="Martial Status")
+
+# education and deposit
+ggplot(bank_imp, aes(x = y, fill = education)) + geom_bar(position = "fill") + labs(y = "Proportion")
+
+# Next we will visualize subscriber percentage by education level, marital status, occupation, and age:
+
+bank_imp_education_yes_no <- bank_imp %>% group_by(education, y) %>% summarise(n = n())
+bank_imp_education_counts <- bank_imp %>% group_by(education) %>% summarise(n = n())
+bank_imp_education_yes_no_counts <- left_join(bank_imp_education_yes_no, bank_imp_education_counts, by = "education")
+bank_imp_education_yes_no_counts_perc <- bank_imp_education_yes_no_counts %>% mutate(perc = round((n.x / n.y) * 100, digits = 0))
+bank_imp_education_yes_no_counts_perc 
+
+# % of subscribers by education
+ggplot(bank_imp_education_yes_no_counts_perc, aes(x = education, y = perc, fill = y, label = perc)) + 
+  geom_bar(stat = "identity", alpha = 0.7) + geom_text(position = "stack", size = 6) + 
+  ggtitle("Percentage of subscribers by education level") + xlab("") + ylab("% subscribed") +
+  scale_fill_brewer(palette="Set3") + theme_bw() + coord_flip()
+
+
+bank_imp_marital_yes_no <- bank_imp %>% group_by(marital, y) %>% summarise(n = n())
+bank_imp_marital_counts <- bank_imp %>% group_by(marital) %>% summarise(n = n())
+bank_imp_marital_yes_no_counts <- left_join(bank_imp_marital_yes_no, bank_imp_marital_counts, by = "marital")
+bank_imp_marital_yes_no_counts_perc <- bank_imp_marital_yes_no_counts %>% mutate(perc = round((n.x / n.y) * 100, digits = 0))
+
+# % of subscribers by marital status
+ggplot(bank_imp_marital_yes_no_counts_perc, aes(x = marital, y = perc, fill = y, label = perc)) + 
+  geom_bar(stat = "identity", alpha = 0.7) + geom_text(position = "stack", size = 6)  + 
+  scale_fill_brewer(palette="Spectral") + ggtitle("Percentage of subscribers by marital status") +
+  xlab("") + ylab("% subscribed") + theme_bw() + coord_flip()
+
+bank_imp_job_yes_no <- data.frame(table(bank_imp$job, bank_imp$y))
+colnames(bank_imp_job_yes_no) <- c("job", "y", "Freq")
+bank_imp_job_counts <- bank_imp %>% group_by(job) %>% summarise(n = n())
+bank_imp_job_yes_no_counts <- left_join(bank_imp_job_yes_no, bank_imp_job_counts, by = "job")
+bank_imp_job_yes_no_counts_perc <- bank_imp_job_yes_no_counts %>% mutate(perc = round((Freq / n) * 100, digits = 0))
+
+# % of subscribers by job type
+ggplot(bank_imp_job_yes_no_counts_perc, aes(x = job, y = perc, fill = y, label = perc)) + 
+  geom_bar(stat = "identity", alpha = 0.7) + geom_text(position = "stack", size = 6)  + 
+  scale_fill_brewer(palette="Set2") + ggtitle("Percentage of subscribers by occupation") +
+  xlab("") +  ylab("% subscribed") +   theme_bw() + coord_flip()
+
+bank_imp_age_yes_no <- bank_imp %>% group_by(age, y) %>% summarise(n = n())
+bank_imp_age_counts <- bank_imp %>% group_by(age) %>% summarise(n = n())
+bank_imp_age_yes_no_counts <- left_join(bank_imp_age_yes_no, bank_imp_age_counts, by = "age")
+bank_imp_age_yes_no_counts_perc <- bank_imp_age_yes_no_counts %>% mutate(perc = round((n.x / n.y) * 100, digits = 1))
+
+# % of subscribers by age bins
+ggplot(bank_imp_age_yes_no_counts_perc, aes(x = age, y = perc, fill = y, label = perc)) + 
+  geom_bar(stat = "identity", position = "dodge", alpha = 0.6) +  scale_fill_brewer(palette="Paired") +
+  ggtitle("Percentage of subscribers by age bins") + xlab("Age bins") + ylab("% subscribed") +
+  theme_bw() + coord_flip()
+```
+
+```{r train_test_split}
+dim(bank_imp)
+prop.table(table(bank_imp$y))
+
+set.seed(123)
+split <- initial_split(bank_imp, prop = .8, strata = y)
+train <- training(split)
+test <- testing(split)
+
+table(train$y)
+prop.table(table(train$y))
+
+table(test$y)
+prop.table(table(test$y))
+
+# 50-50 down sampling
+train_down <- SMOTE(form = y~.,data = train, k = 5, perc.over = 100, perc.under = 200)
+table(train_down$y)
+prop.table(table(train_down$y))
+
+# 60-40 down sampling
+train_bal <- SMOTE(form = y~.,data = train, k = 8, perc.over = 390)
+table(train_bal$y)
+prop.table(table(train_bal$y))
+
+dm <- rbind(Train=dim(train),Test=dim(test),Train_down=dim(train_down), Train_bal=dim(train_bal))
+colnames(dm) <- c("Observations", "Features")
+dm
+```
+
+
+
+```{r reg}
+# Here's our linear regression formula. The variables are based on our intution looking at the correlation plots
+bank_reg <- glm(formula = y ~ age + job + marital + education + housing + loan + contact + duration + pdays + previous, family = binomial, data = train_down)
+summary(bank_reg)
+# Predict on test data
+bank_reg_pred <- predict(bank_reg, test[,c(1:4,6:8,11,13,14,21)], type = "response")
+bank_reg_pred_label <- as.factor(ifelse(bank_reg_pred>.7, "yes", "no"))
+# Logistic regression confusion matrix
+confusionMatrix(bank_reg_pred_label, test$y, positive = "yes")
+# Reg ROC Curve and AUC
+bank_reg_roc <- prediction(bank_reg_pred, test$y)
+plot(performance(bank_reg_roc, "tpr", "fpr"))
+bank_reg_auc <- performance(bank_reg_roc, "auc")
+bank_reg_auc@y.values[[1]]
+``` 
+
+
+```{r binary logistic regression}
+# binary logistic regression
+kfoldrepeated<-trainControl(method = "repeatedcv",number = 5,repeats = 3)
+model_bin<-train(y ~ .,data=train_down,method="glm",trControl=kfoldrepeated)
+model_bin
+# prediction on test data
+pred_test <- predict(model_bin,test)
+confusionMatrix(as.factor(test$y),as.factor(pred_test))
+CrossTable(test$y, pred_test,prop.chisq = FALSE, prop.c = FALSE, prop.r = FALSE,
+           dnn = c('actual term deposit subscription', 'predicted term deposit subscription'))
+
+pr<-prediction(as.numeric(pred_test),as.numeric(test$y))
+auc<-performance(pr,measure = "auc")
+auc<-auc@y.values
+auc
+prf<-performance(pr,measure = "tpr",x.measure = "fpr")
+plot(prf)
+# Here the model performed well with 88% accuracy (predicting 76.5% of not accepting term deposit and 
+# 9.6% accepting term deposit correctly),but inter rater reliability being low and specificity upto the mark 
+# and area under curve of 85.5%.
+```
+
+```{r Naive bayes}
+#Naive bayes 
+model_nb<-naive_bayes(y ~ ., data=train_down)
+model_nb$prior
+# The model is built by calculating the prior probabilities with 88% of not accepting subscription and 11% accepting subscription with this it calculates posterior probabilities as it is a probabilistic model.
+# prediction on test data
+pred_test <- predict(model_nb,test)
+confusionMatrix(as.factor(test$y),as.factor(pred_test))
+CrossTable(test$y, pred_test,prop.chisq = FALSE, prop.c = FALSE, prop.r = FALSE,
+           dnn = c('actual term deposit subscription', 'predicted term deposit subscription'))
+pr<-prediction(as.numeric(pred_test),as.numeric(test$y))
+auc<-performance(pr,measure = "auc")
+auc<-auc@y.values
+auc
+# The model has 81% accuracy but specificity is very low.
+```
+
+```{r Decision Tree}
+# Decision Tree
+model_cart<-rpart(y ~ ., data=train_down,control = rpart.control(minbucket = 10))
+model_cart$cptable
+rpart.plot(model_cart)
+# Here the model is built with different complexity parameter and calculating its respective errors and selecting 
+# the cp with low error (cp=0.01 is selected)
+
+# prediction on test data
+pred_test<-predict(model_cart,test,type="class")
+confusionMatrix(as.factor(test$y),as.factor(pred_test))
+CrossTable(test$y, pred_test,prop.chisq = FALSE, prop.c = FALSE, prop.r = FALSE,
+           dnn = c('actual term deposit subscription', 'predicted term deposit subscription'))
+# From cross table we can read that 76.5% of not accepting subscription and 9.7% of accepting subscription is predicted. 
+# From the tree plotted the variable duration is selected as node with low GINI index.
+pr<-prediction(as.numeric(pred_test),as.numeric(test$y))
+auc<-performance(pr,measure = "auc")
+auc<-auc@y.values
+auc
+prf<-performance(pr,measure = "tpr",x.measure = "fpr")
+plot(prf)
+# The performance of CART decision tree model is good with 83.14% accurate,but kappa is low and specificity is low 
+# and area under curve is 83.5%
+```
+
+```{r C50 Decision Tree}
+# C50 Decision Tree
+model_c50<-C5.0(y ~ ., data=train_down)
+summary(model_c50)
+# The error output notes that the model correctly classified all but 1047 out of 14852 training instances for an error rate of 7%. A total of 739 actual no values were incorrectly classified as no (false positives), while 308 yes values were misclassified as no (false negatives).
+# Top 5 attribute usage
+# 100.00%	duration
+#	 76.59%	nr.employed
+#	 76.43%	emp.var.rate
+#	 71.29%	cons.conf.idx
+#	 70.98%	pdays
+# Prediction on test data
+# To apply our decision tree to the test dataset, we use the predict() function, as shown in the following line of code:
+# Evaluate model performance
+pred_test<-predict(model_c50,test)
+confusionMatrix(as.factor(test$y),as.factor(pred_test))
+# Cross table validation
+CrossTable(test$y, pred_test,prop.chisq = FALSE, prop.c = FALSE, prop.r = FALSE,
+           dnn = c('actual term deposit subscription', 'predicted term deposit subscription'))
+# Out of the 8236 test y application records, our model correctly predicted 6439 and 800, resulting in an accuracy of 87.89 % and an error rate of 12.11 %. This is a good performance for this kind of model although it´s necessary do more analysis and comparing with other classification models.
+pr<-prediction(as.numeric(pred_test),as.numeric(test$y))
+auc<-performance(pr,measure = "auc")
+auc<-auc@y.values
+auc
+prf<-performance(pr,measure = "tpr",x.measure = "fpr")
+plot(prf)
+# The model is accurate of 87.89%,kappa is also good and other parameters being performed well. Area under curve is 87.1% 
+# Overall it is a good model.
+```
+
+```{r }
+# Random Forest
+model_rf<-randomForest(y ~ ., data=train_down,mtry=3)
+model_rf
+plot(model_rf)
+varImpPlot(model_rf)
+# The random forest model has 7.47% error on test data(68% of train data) which is the out of bag error.
+# From the model plot we can see that the error rate was decreasing as no of trees was increasing and from the 
+# variable importance plot we can infer that the variable with low GINI index has more importance.
+
+# Prediction on test data
+pred_test<-predict(model_rf,test)
+confusionMatrix(as.factor(test$y),as.factor(pred_test))
+CrossTable(test$y, pred_test,prop.chisq = FALSE, prop.c = FALSE, prop.r = FALSE,
+           dnn = c('actual term deposit subscription', 'predicted term deposit subscription'))
+pr<-prediction(as.numeric(pred_test),as.numeric(test$y))
+auc<-performance(pr,measure = "auc")
+auc<-auc@y.values
+auc
+prf<-performance(pr,measure = "tpr",x.measure = "fpr")
+plot(prf)
+# The model performed excellent by predicting on test data with 88.9 % accuracy and other parameters were totally 
+# satisfactory but we need to check whether these parameters are consistently performing well on different 
+# combination of bank dataset.
+```
+
+```{r randomforest}
+# Random Forest Model
+# Since we already split the data as well as balancing it with SMOTE, all that's left to do for now is to take out 
+# the near zero variance variable out, and train our random forest model.
+n0_var <- nearZeroVar(train_down)
+train_down_v2 <- train_down[,-n0_var]
+
+# Model Training
+# We're using k fold cross validation in order to avoid bias and overfitting.
+ctrl <- trainControl(method = "cv", number = 5, repeats = 3)
+bank_rf_model <- train(y ~., data = train_down, method = "rf", trControl= ctrl)
+# rf variable importance
+varImp(bank_rf_model)
+# rf model prediction on test dataset
+bank_rf_pred <- predict(bank_rf_model, test)
+# RF Model confusion matrix
+confusionMatrix(bank_rf_pred, test$y, positive = "yes")
+# RF Model Density Plot
+plot(density(predict(bank_rf_model, test, type = "prob")[,2]))
+# RF Model ROC Curve and AUC
+bank_rf_predict_prob <- predict(bank_rf_model, test, type = "prob")
+bank_rf_roc <- prediction(bank_rf_predict_prob[,2], test$y)
+plot(performance(bank_rf_roc, "tpr", "fpr"))
+bank_rf_auc <- performance(bank_rf_roc, "auc")
+bank_rf_auc@y.values[[1]]
+```
+
+```{r Adaptive boosting}
+# Adaptive boosting
+library(ada)
+model_ada<-ada(y ~ ., data=train_down,loss='exponential',type='discrete',iter=100)
+model_ada
+plot(model_ada)
+# Here the exponential method is used to build the model with 100 iterations where test data error being only 8% 
+# and we can see that error rate was decreasing with increase in no of iterations from the plot.
+
+# Prediction on test data
+pred_test<-predict(model_ada,test)
+confusionMatrix(as.factor(test$y),as.factor(pred_test))
+CrossTable(test$y, pred_test,prop.chisq = FALSE, prop.c = FALSE, prop.r = FALSE,
+           dnn = c('actual term deposit subscription', 'predicted term deposit subscription'))
+pr<-prediction(as.numeric(pred_test),as.numeric(test$y))
+auc<-performance(pr,measure = "auc")
+auc<-auc@y.values
+auc
+prf<-performance(pr,measure = "tpr",x.measure = "fpr")
+plot(prf)
+# The model performed well with accuracy of 88.9 % but kappa was low as 57.2 % and remaining parameters 
+# were also satisfactory
+```
